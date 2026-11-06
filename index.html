@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GEL Japan 3D</title>
+    <meta
+      name="description"
+      content="3D view of Smart Maps Global Elevation Tiles (GEL) over Japan, streamed from PMTiles and rendered with Giro3D."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 26 12 10l5 8 4-5 9 13z' fill='%234f9be8'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div id="view"></div>
+    <div id="progress"></div>
+    <div id="status" hidden></div>
+    <div id="readout"></div>
+    <footer id="attribution">
+      Elevation:
+      <a href="https://source.coop/smartmaps/gel" target="_blank" rel="noopener"
+        >Smart Maps Global Elevation Tiles</a
+      >
+      (UN Smart Maps Group, CC0; NASADEM, Global Map) ·
+      <span id="imagery-attribution"></span> ·
+      <a href="https://giro3d.org" target="_blank" rel="noopener">Giro3D</a>
+    </footer>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
