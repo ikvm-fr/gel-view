@@ -1,5 +1,5 @@
 import GUI from 'lil-gui';
-import { IMAGERY, PRESETS, RAMPS } from './config.js';
+import { IMAGERY, RAMPS, REGIONS } from './config.js';
 
 /**
  * Builds the settings panel. All controls act on live Giro3D objects;
@@ -10,28 +10,33 @@ export function createGui(ctx) {
     instance,
     map,
     state,
+    regionKey,
+    region,
     imageryLayers,
     elevationLayer,
     colorMap,
     rampColors,
     applyExaggeration,
     setImagery,
+    setRegion,
     goTo,
   } = ctx;
 
   const redraw = () => instance.notifyChange(map);
-  const gui = new GUI({ title: 'GEL Viewer — Japan', width: 300 });
+  const gui = new GUI({ title: `GEL 3D Viewer — ${region.label}`, width: 300 });
   if (window.innerWidth < 700) gui.close();
 
   // --- View --------------------------------------------------------------
-  const view = { preset: 'All Japan' };
+  const regionOptions = Object.fromEntries(Object.entries(REGIONS).map(([k, r]) => [r.label, k]));
+  const view = { region: regionKey, preset: Object.keys(region.presets)[0] };
   const fView = gui.addFolder('View');
+  fView.add(view, 'region', regionOptions).name('Region').onChange(setRegion);
   fView
-    .add(view, 'preset', Object.keys(PRESETS))
+    .add(view, 'preset', Object.keys(region.presets))
     .name('Go to')
-    .onChange((name) => goTo(PRESETS[name]));
-  fView
-    .add(state, 'exaggeration', 0.5, 10, 0.1)
+    .onChange((name) => goTo(region.presets[name]));
+  const exaggerationCtrl = fView
+    .add(state, 'exaggeration', 0.5, region.maxExaggeration, 0.1)
     .name('Exaggeration ×')
     .onChange(applyExaggeration);
 
@@ -66,7 +71,7 @@ export function createGui(ctx) {
 
   // --- Imagery -------------------------------------------------------------
   const imagery = {
-    source: 'gsi',
+    source: region.imagery,
     opacity: 1,
     brightness: 0,
     contrast: 1,
@@ -108,6 +113,10 @@ export function createGui(ctx) {
 
   // --- Hypsometric tint ----------------------------------------------------
   const tint = { enabled: false, ramp: 'Topo', min: colorMap.min, max: colorMap.max };
+  const updateRamp = () => {
+    colorMap.colors = rampColors(RAMPS[tint.ramp], colorMap.min, colorMap.max);
+    redraw();
+  };
   const fTint = gui.addFolder('Hypsometric tint');
   fTint
     .add(tint, 'enabled')
@@ -126,22 +135,21 @@ export function createGui(ctx) {
     .add(tint, 'ramp', Object.keys(RAMPS))
     .name('Color ramp')
     .onChange((v) => {
-      colorMap.colors = rampColors(RAMPS[v]);
-      redraw();
+      updateRamp();
     });
   fTint
-    .add(tint, 'min', -500, 2000, 10)
+    .add(tint, 'min', -500, 3000, 10)
     .name('Min elevation (m)')
     .onChange((v) => {
       colorMap.min = v;
-      redraw();
+      updateRamp();
     });
   fTint
-    .add(tint, 'max', 100, 4500, 10)
+    .add(tint, 'max', 100, 9000, 10)
     .name('Max elevation (m)')
     .onChange((v) => {
       colorMap.max = v;
-      redraw();
+      updateRamp();
     });
   fTint.close();
 
@@ -199,7 +207,7 @@ export function createGui(ctx) {
   fAdv.close();
 
   if (!elevationLayer) {
-    fView.controllers[1].disable();
+    exaggerationCtrl.disable();
   }
 
   return gui;

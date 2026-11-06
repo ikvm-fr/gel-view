@@ -13,7 +13,7 @@ import { MapLightingMode } from '@giro3d/giro3d/entities/MapLightingOptions.js';
 import TiledImageSource from '@giro3d/giro3d/sources/TiledImageSource.js';
 
 import PMTilesElevationSource from './PMTilesElevationSource.js';
-import { GEL_URL, IMAGERY, JAPAN_BOUNDS, PRESETS, RAMPS } from './config.js';
+import { GEL_URL, IMAGERY, RAMPS, REGIONS } from './config.js';
 import { lonLatToMercator, mercatorScaleFactor, mercatorToLonLat } from './geo.js';
 import { createGui } from './gui.js';
 
@@ -31,18 +31,29 @@ function setStatus(text, isError = false) {
 }
 
 // ---------------------------------------------------------------------------
+// Region (from ?region=, World by default)
+// ---------------------------------------------------------------------------
+
+const params = new URLSearchParams(window.location.search);
+const regionKey = params.get('region') in REGIONS ? params.get('region') : Object.keys(REGIONS)[0];
+const region = REGIONS[regionKey];
+
+/** Reloads the page on another region, keeping the other URL parameters. */
+function setRegion(key) {
+  const next = new URLSearchParams(window.location.search);
+  next.set('region', key);
+  window.location.search = next.toString();
+}
+
+// ---------------------------------------------------------------------------
 // Scene
 // ---------------------------------------------------------------------------
 
 const crs = CoordinateSystem.epsg3857;
 
-const sw = lonLatToMercator(JAPAN_BOUNDS.west, JAPAN_BOUNDS.south);
-const ne = lonLatToMercator(JAPAN_BOUNDS.east, JAPAN_BOUNDS.north);
+const sw = lonLatToMercator(region.bounds.west, region.bounds.south);
+const ne = lonLatToMercator(region.bounds.east, region.bounds.north);
 const extent = new Extent(crs, sw.x, ne.x, sw.y, ne.y);
-
-// Elevations are multiplied by this so that "1×" means true proportions at the
-// latitude of central Japan (Web Mercator stretches horizontal distances there).
-const MERCATOR_Z = mercatorScaleFactor(35);
 
 const instance = new Instance({
   target: 'view',
@@ -74,18 +85,36 @@ const map = new Map({
 });
 await instance.add(map);
 
+const camera = instance.view.camera;
+const controls = new MapControls(camera, instance.domElement);
+
 // ---------------------------------------------------------------------------
-// Vertical exaggeration: the map is flat (Z up), so we just scale its Z axis.
+// Vertical exaggeration
+//
+// The map is flat (Z up), so exaggeration is a scale on its Z axis. Web Mercator
+// stretches horizontal distances by 1/cos(latitude), so elevations get the same
+// factor, evaluated at the latitude the camera looks at: "1×" then means true
+// proportions wherever you are.
 // ---------------------------------------------------------------------------
 
-const state = { exaggeration: 1.5 };
+const state = { exaggeration: region.exaggeration };
+let mercatorZ = 1;
 
 function applyExaggeration() {
-  map.object3d.scale.z = state.exaggeration * MERCATOR_Z;
+  map.object3d.scale.z = state.exaggeration * mercatorZ;
   map.object3d.updateMatrixWorld(true);
   instance.notifyChange(map);
 }
-applyExaggeration();
+
+/** Recomputes the Mercator compensation for the current camera target. */
+function updateMercatorZ() {
+  const { lat } = mercatorToLonLat(controls.target.x, controls.target.y);
+  const factor = mercatorScaleFactor(MathUtils.clamp(lat, -80, 80));
+  if (Math.abs(factor / mercatorZ - 1) > 0.005) {
+    mercatorZ = factor;
+    applyExaggeration();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Imagery (color) layers
@@ -117,9 +146,12 @@ function setImagery(key) {
 // Hypsometric tint
 // ---------------------------------------------------------------------------
 
-function rampColors(stops, count = 256) {
+/** Samples a ramp (see RAMPS in config.js) into `count` colors over [min, max]. */
+function rampColors(ramp, min, max, count = 256) {
+  const stops = ramp.absolute
+    ? ramp.stops.map(([m, c]) => [(m - min) / (max - min), c])
+    : ramp.stops;
   const colors = [];
-  const a = new Color();
   const b = new Color();
   for (let i = 0; i < count; i++) {
     const t = i / (count - 1);
@@ -128,19 +160,23 @@ function rampColors(stops, count = 256) {
     const [t0, c0] = stops[k];
     const [t1, c1] = stops[k + 1];
     const f = t1 > t0 ? MathUtils.clamp((t - t0) / (t1 - t0), 0, 1) : 0;
-    colors.push(a.set(c0).clone().lerp(b.set(c1), f));
+    colors.push(new Color(c0).lerp(b.set(c1), f));
   }
   return colors;
 }
 
-const colorMap = new ColorMap({ colors: rampColors(RAMPS.Topo), min: -50, max: 3800 });
+const tintMin = -50;
+const colorMap = new ColorMap({
+  colors: rampColors(RAMPS.Topo, tintMin, region.tintMax),
+  min: tintMin,
+  max: region.tintMax,
+});
 colorMap.active = false;
 
 // ---------------------------------------------------------------------------
 // Elevation layer (GEL PMTiles)
 // ---------------------------------------------------------------------------
 
-const params = new URLSearchParams(window.location.search);
 const pmtilesUrl = params.get('pmtiles') ?? GEL_URL;
 
 let elevationLayer = null;
@@ -152,7 +188,7 @@ try {
     extent,
     source,
     colorMap,
-    minmax: { min: -50, max: 3800 },
+    minmax: { min: tintMin, max: region.tintMax },
     preloadImages: true,
   });
   await map.addLayer(elevationLayer);
@@ -166,20 +202,18 @@ try {
 // Camera & controls
 // ---------------------------------------------------------------------------
 
-const camera = instance.view.camera;
-const controls = new MapControls(camera, instance.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.15;
 controls.screenSpacePanning = false;
 controls.maxPolarAngle = MathUtils.degToRad(85);
 controls.minDistance = 1500;
-controls.maxDistance = 7000000;
+controls.maxDistance = region.maxDistance;
 controls.zoomToCursor = true;
 instance.view.setControls(controls);
 
 const tmp = new Vector3();
 
-/** Keeps the orbit target inside the Japan extent and the camera above the terrain. */
+/** Keeps the orbit target inside the region and the camera above the terrain. */
 function constrainCamera() {
   const t = controls.target;
   const cx = MathUtils.clamp(t.x, extent.west, extent.east);
@@ -199,16 +233,19 @@ function constrainCamera() {
 
 controls.addEventListener('change', () => {
   constrainCamera();
+  updateMercatorZ();
   instance.notifyChange(camera);
 });
 
 function goTo(preset) {
   const { x, y } = lonLatToMercator(preset.lon, preset.lat);
+  controls.target.set(x, y, 0);
+  updateMercatorZ();
   const sample = map.getElevationFast(x, y);
   const z = (sample?.elevation ?? 0) * map.object3d.scale.z;
   // Mercator meters are larger than ground meters by 1/cos(lat); scale the distance so
   // presets frame the same ground area regardless of latitude.
-  const d = preset.distance * mercatorScaleFactor(preset.lat);
+  const d = preset.distance * mercatorScaleFactor(MathUtils.clamp(preset.lat, -80, 80));
   const heading = MathUtils.degToRad(preset.heading);
   const tilt = MathUtils.degToRad(preset.tilt);
   controls.target.set(x, y, z);
@@ -222,7 +259,7 @@ function goTo(preset) {
   instance.notifyChange(camera);
 }
 
-goTo(PRESETS['All Japan']);
+goTo(Object.values(region.presets)[0]);
 
 // Damping needs a per-frame update.
 instance.addEventListener('before-camera-update', () => {
@@ -240,6 +277,8 @@ setInterval(() => {
   progressEl.style.width = loading ? `${Math.round(instance.progress * 100)}%` : '100%';
 }, 250);
 
+const fmt = (v, pos, neg) => `${Math.abs(v).toFixed(4)}°${v >= 0 ? pos : neg}`;
+
 let pickPending = false;
 instance.domElement.addEventListener('pointermove', (ev) => {
   if (pickPending) return;
@@ -255,7 +294,7 @@ instance.domElement.addEventListener('pointermove', (ev) => {
     const { lon, lat } = mercatorToLonLat(p.x, p.y);
     const sample = map.getElevationFast(p.x, p.y);
     const elev = sample ? `${Math.round(sample.elevation)} m` : '—';
-    readoutEl.textContent = `${lat.toFixed(4)}°N  ${lon.toFixed(4)}°E  ·  ${elev}`;
+    readoutEl.textContent = `${fmt(lat, 'N', 'S')}  ${fmt(lon, 'E', 'W')}  ·  ${elev}`;
   });
 });
 
@@ -263,20 +302,23 @@ instance.domElement.addEventListener('pointermove', (ev) => {
 // GUI
 // ---------------------------------------------------------------------------
 
-setImagery('gsi');
+setImagery(region.imagery);
 
 createGui({
   instance,
   map,
   state,
+  regionKey,
+  region,
   imageryLayers,
   elevationLayer,
   colorMap,
   rampColors,
   applyExaggeration,
   setImagery,
+  setRegion,
   goTo,
 });
 
 // Exposed for debugging from the browser console.
-window.gelView = { instance, map, controls, elevationLayer, imageryLayers, goTo };
+window.gelView = { instance, map, controls, elevationLayer, imageryLayers, goTo, region };
